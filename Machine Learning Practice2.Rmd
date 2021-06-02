@@ -1,0 +1,263 @@
+---
+title: "Machine Learning Practice"
+output:
+  rmarkdown::github_document
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(plyr)          # Rmisc
+library(dplyr)         # filter()
+library(ggplot2)       # ggplot()             
+library(caret)         # createDataPartition() 
+library(rpart)         # rpart()
+library(e1071)         # naiveBayes()
+library(pROC)          # roc()
+library(Rmisc)         # multiplot()
+library(pROC)
+library(rpart.plot)    # prp()
+library(randomForest)  # randomForest()
+library(rattle)        # fancyRpartPlot()
+library(kknn)
+library(class)
+```
+
+Load the data into R, run the following algorithms: logistic regressions, KNN, SVM, naïve bayes, decision trees, random forest and glmnet models. 
+
+```{r Load_data}
+MyData<-read.table("ionosphere.data",sep = ",", stringsAsFactors = FALSE)
+```
+
+```{r Preprocessing_data}
+Data<-na.omit(MyData)[,-c(1,2)]
+Data$V35 <- factor(Data$V35, labels = c('0', '1')) 
+print("The 'g' is labeled as 0, 'g' is labeled as 1.")
+table(Data$V35)
+
+#Create training dataset and test dataset
+set.seed(1234) 
+index <- createDataPartition(Data$V35, p = 0.7, list = F)
+traindata <- Data[index, ] 
+testdata <- Data[-index, ] 
+```
+
+```{r logistic_regression, echo=FALSE}
+set.seed(12345)
+glm_model<-glm(V35~.,data=traindata,family = binomial(link = "logit"))
+anova(glm_model,test="Chisq")
+summary(glm_model)
+
+#Using stepwise method to auto select independent variables
+Step_model<-step(glm_model,direction="both")
+summary(Step_model)
+
+#Selecting the best model
+AIC(Step_model)
+AIC(glm_model)
+
+#Test the model
+glm_predict<-predict(Step_model,testdata[,-33],type = "response")
+leftOrNot<-ifelse(glm_predict>0.5,1,0)
+#Calculating the confusion matrix
+glm_table<-table(leftOrNot,testdata[,33])
+confusionMatrix(as.factor(leftOrNot),as.factor(testdata[,33]))
+#Calculating the accuracy
+sum(diag(glm_table))/sum(glm_table)*100
+
+#Calculating AUC
+glm_roc<-roc(testdata$V33, glm_predict)
+plot(glm_roc,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+```
+
+```{r KNN, echo=FALSE}
+#Visalized the factors
+par(mfrow=c(2,1))
+KNN_fit<-train.kknn(formula=V35~.,data=traindata,kmax=11,distance=2,kernel=c("rectangular","triangular","gaussian"),na.action=na.omit())
+plot(KNN_fit$MISCLASS[,1]*100,type="l",main="Error rate graph",
+     cex.main=0.8,ylim=c(2,10),xlab="K",ylab="Mistake rate (%)")
+lines(KNN_fit$MISCLASS[,2]*100,lty=2,col=1)
+lines(KNN_fit$MISCLASS[,3]*100,lty=3,col=2)
+legend("topright",legend=c("rectangular","triangular","gaussian"),lty=c(1,2,3),col=c(1,1,2),cex=0.7)
+
+#weight Modeling
+KNN_model<-kknn(formula=V35~.,train=traindata,test=testdata,k=7,distance=2,kernel="gaussian",na.action=na.omit())
+
+#Test The model
+con_KNN<-table(testdata[,33],KNN_model$fitted.values)
+confusionMatrix(testdata[,33],KNN_model$fitted.values)
+rate_KNN=sum(diag(con_KNN))/sum(con_KNN)*100
+```
+
+```{r SVM, echo=FALSE}
+set.seed(12345)
+#Modeling
+Best_model<-svm(V35~.,data=traindata,type="C-classification",kernel="radial",gamma=0.1,cost=100,scale=FALSE)
+
+#Test the model
+pred_svm <- predict(Best_model, testdata[-33])    
+con_svm<-table(pred_svm, testdata$V35) 
+confusionMatrix(pred_svm, testdata$V35) 
+rate_svm=sum(diag(con_svm))/sum(con_svm)*100
+```
+
+```{r Naives_Bayes, echo=FALSE}
+#modeling
+nb_model <- naiveBayes(V35 ~ ., data = traindata)
+
+#Test the model
+pred_nb <- predict(nb_model, testdata[-33],type="class")
+con_nb <- table(pred_nb, testdata[,33])
+confusionMatrix(pred_nb, testdata[,33])
+rate_nb=sum(diag(con_nb))/sum(con_nb)*100
+```
+
+```{r CART_decision_tree, echo=FALSE}
+set.seed(123456)
+#Modeling
+rpart_model <- rpart(V35 ~ ., data = traindata, method="class", parm =list(split="gini"))
+printcp(rpart_model)
+plotcp(rpart_model)
+
+#Visualization
+rpart.plot(rpart_model,branch=1,extra=2,under=TRUE,faclen=0,cex=0.8,main="Visualization of CART")
+prp(rpart_model)
+rpart.plot(rpart_model,type=4,extra=2,branch=0,main="Visualization of CART")
+
+#Test the model
+pred_rpart <- predict(rpart_model, testdata[-33],type="class")
+con_rpart <- table(pred_rpart, testdata[,33])
+confusionMatrix(pred_rpart, testdata[,33])
+rate_rpart=sum(diag(con_rpart))/sum(con_rpart)*100
+```
+
+```{r random_forest, echo=FALSE}
+set.seed(1234567)
+#Modeling
+rf_model <- randomForest(V35 ~ ., data = traindata,importance=TRUE)
+head(rf_model$votes)#prediction probability
+head(rf_model$oob.times)#Observation outside the bag
+head(treesize(rf_model)) #the number of leaf nodes  
+head(getTree(rfobj=rf_model,k=1,labelVar=TRUE))
+importance_Matrix<-rf_model$importance
+
+#Visalization
+DrawL<-par()
+par(mfrow=c(2,1),mar=c(5,5,3,1))
+plot(rf_model,main="OOB of randomforest")
+plot(margin(rf_model),type="h",main="Boundary point detection",xlab="Observation Sequence",ylab="relative risk reduction") 
+par(DrawL)
+barplot(rf_model$importance[,3],main="Prediction accuracy change")
+box()
+varImpPlot(x=rf_model, sort=TRUE, n.var=nrow(rf_model$importance),main="Input variable importance measure scatter plot") 
+
+#Test the model
+pred_rf <- predict(rf_model, testdata[-33])
+con_rf<-table(pred_rf, testdata$V35)
+confusionMatrix(pred_rf, testdata$V35)
+rate_rf=sum(diag(con_rf))/sum(con_rf)*100
+```
+
+Perform model selection and choose the best model for this data set. 
+
+```{r model_evaluate, echo=FALSE}
+#AUC figure
+par(mfrow=c(2,3))
+roc_KNN <- roc(testdata[,33],as.numeric(KNN_model$fitted.values)-1)
+plot(roc_KNN,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+
+pred_nb <- as.numeric(as.character(pred_nb))
+roc_nb <- roc(testdata$V35, pred_nb) 
+plot(roc_nb,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+
+pred_rpart <- as.numeric(as.character(pred_rpart))
+roc_rpart <- roc(testdata$V35, pred_rpart) 
+plot(roc_rpart,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+
+
+pred_svm<- as.numeric(as.character(pred_svm))
+roc_svm <- roc(testdata$V35, pred_svm)
+plot(roc_svm,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+
+
+pred_rf<- as.numeric(as.character(pred_rf))
+roc_rf <- roc(testdata$V35, pred_rf)
+plot(roc_rf,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+```
+
+Based on the above result, the SVM model give the best prediction result, becuase the model has highest accuracy and the largest AUC value..
+
+
+
+
+
+I am using the dataset about the Human resource investigation to identifiv the influence factors of a colleague leaving the company. I used the method of logistic regression and the CART decision tree. Because They give a clear result in classification scenario. According to the results, the CART decision tree gives a better result compared with the logistic forest.
+
+```{r human_resources, echo=FALSE}
+MyData<-read.table(file="HumanResourceInvestigation.csv",header=TRUE,sep=",",stringsAsFactors=FALSE)
+Data<-na.omit(MyData[MyData$sales=="technical",-9])
+Data$salary<-factor(Data$salary,order=TRUE,levels=c("low","medium","high"),labels=c("low","medium","high"))
+Data$promotion_last_5years<-factor(Data$promotion_last_5years,order=TRUE,levels=c(0,1),labels=c("No promotion","promotion"))
+Data$Work_accident<-factor(Data$Work_accident,order=TRUE,levels=c(1,0),labels=c("Have mistake","no mistake"))
+Data$left <- factor(Data$left, levels = c('0', '1')) 
+index <- createDataPartition(Data$left, p = 0.7, list = F)
+traindata <- Data[index, ] 
+testdata <- Data[-index, ] 
+
+#Logistic Regression
+set.seed(66666)
+glm_model<-glm(left~.,data=traindata,family = binomial(link = "logit"))
+anova(glm_model,test="Chisq")
+summary(glm_model)
+
+#Using stepwise method to auto select independent variables
+Step_model<-step(glm_model,direction="both")
+summary(Step_model)
+
+#Selecting the best model
+AIC(Step_model)
+AIC(glm_model)
+
+#Test the model
+glm_predict<-predict(Step_model,testdata[,-7],type = "response")
+leftOrNot<-ifelse(glm_predict>0.5,1,0)
+#Calculating the confusion matrix
+glm_table<-table(leftOrNot,testdata[,7])
+confusionMatrix(as.factor(leftOrNot),as.factor(testdata[,7]))
+#Calculating the accuracy
+sum(diag(glm_table))/sum(glm_table)*100
+
+#Calculating AUC
+glm_roc<-roc(testdata$left, glm_predict)
+plot(glm_roc,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+
+#Decision Tree
+set.seed(66666)
+#Modeling
+rpart_model <- rpart(left ~ ., data = traindata, method="class", parm =list(split="gini"))
+printcp(rpart_model)
+plotcp(rpart_model)
+
+#Visualization
+rpart.plot(rpart_model,branch=1,extra=2,under=TRUE,faclen=0,cex=0.8,main="Visualization of CART")
+prp(rpart_model)
+rpart.plot(rpart_model,type=4,extra=2,branch=0,main="Visualization of CART")
+
+#Test the model
+pred_rpart <- predict(rpart_model, testdata[-7],type="class")
+con_rpart <- table(pred_rpart, testdata[,7])
+confusionMatrix(pred_rpart, testdata[,7])
+rate_rpart=sum(diag(con_rpart))/sum(con_rpart)*100
+
+pred_rpart <- as.numeric(as.character(pred_rpart))
+roc_rpart <- roc(testdata$left, pred_rpart) 
+plot(roc_rpart,print.auc=TRUE,auc.polygon=TRUE,grid=c(0.1,0.2),grid.col=c("green","red"),
+     max.auc.polygon=TRUE,auc.polygon.col="skyblue",print.thres=TRUE)
+
+```
